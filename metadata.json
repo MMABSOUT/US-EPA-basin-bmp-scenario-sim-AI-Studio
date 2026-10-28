@@ -1,0 +1,5 @@
+{
+  "name": "Basin BMP Scenario Simulator",
+  "description": "Probabilistic basin-scale best management practice (BMP) watershed scenario simulator for evaluating uncertainty in pollutant generation, BMP placement, effectiveness, costs, and outlet pollutant load outcomes.",
+  "version": "1.0.0"
+}
