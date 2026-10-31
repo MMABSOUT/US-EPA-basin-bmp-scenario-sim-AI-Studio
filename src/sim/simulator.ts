@@ -97,6 +97,36 @@ export function runSimulation(
   const sumWeights = parcelWeights.reduce((a, b) => a + b, 0);
   const parcelProbs = parcelWeights.map((w) => w / sumWeights);
 
+  // PERFORMANCE OPTIMIZATION:
+  // 1. Precompute PID -> parcel index lookup map to turn O(N) `parcels.findIndex` into O(1) in wetland upstream routing.
+  // 2. Precompute (cps, pollutant, pathway) -> efficiency record map to eliminate repetitive array searches in inner loop.
+  // 3. Precompute static parcel routing parameters (delivery ratios and assigned outlets) to avoid re-evaluating per step.
+  const parcelIndexByPid = new Map<string, number>();
+  for (let i = 0; i < parcels.length; i++) {
+    parcelIndexByPid.set(String(parcels[i].pid), i);
+  }
+
+  const efficiencyKey = (cps: number, pol: string, pathway: string) => `${cps}_${pol}_${pathway.toLowerCase()}`;
+  const efficiencyMap = new Map<string, BmpEfficiencyRecord>();
+  for (const eff of efficiencies) {
+    efficiencyMap.set(efficiencyKey(eff.cps, eff.pollutant, eff.pathway), eff);
+  }
+
+  const defaultOutletId = outlets[0]?.oid || '1';
+  const parcelRouting = parcels.map((p) => {
+    const deliv = p.delivery_ratios || {
+      sdr_f_to_s: 1.0,
+      sdr_s_to_o: 1.0,
+      ndr_f_to_s: 1.0,
+      ndr_s_to_o: 1.0,
+    };
+    return {
+      sdr: (deliv.sdr_f_to_s ?? 1.0) * (deliv.sdr_s_to_o ?? 1.0),
+      ndr: (deliv.ndr_f_to_s ?? 1.0) * (deliv.ndr_s_to_o ?? 1.0),
+      assignedOutlets: p.outlet_ids && p.outlet_ids.length > 0 ? p.outlet_ids : [defaultOutletId],
+    };
+  });
+
   // Upstream adjacency lookup for wetland allocation
   const upstreamMap: Record<string, string[]> = {};
   for (const p of parcels) {
@@ -176,61 +206,44 @@ export function runSimulation(
     // Baseline total basin mass
     const baselineMassTotal: Record<Pollutant, number> = { TN: 0, TP: 0, TSS: 0 };
     for (const pol of pollutants) {
-      baselineMassTotal[pol] = Object.values(baselineParcelMass).reduce(
-        (sum, m) => sum + m[pol],
-        0
-      );
+      let sum = 0;
+      for (let pIdx = 0; pIdx < parcels.length; pIdx++) {
+        sum += baselineParcelMass[pIdx][pol];
+      }
+      baselineMassTotal[pol] = sum;
     }
 
-    // Helper to calculate total routed load reaching outlets
-    const getOutletLoads = () => {
-      const outLoads: Record<string, Record<Pollutant, number>> = {};
-      for (const out of outlets) {
-        outLoads[out.oid] = { TN: 0, TP: 0, TSS: 0 };
-      }
-
-      for (let pIdx = 0; pIdx < parcels.length; pIdx++) {
-        const p = parcels[pIdx];
-        const deliv = p.delivery_ratios || {
-          sdr_f_to_s: 1.0,
-          sdr_s_to_o: 1.0,
-          ndr_f_to_s: 1.0,
-          ndr_s_to_o: 1.0,
-        };
-        const sdr = (deliv.sdr_f_to_s ?? 1.0) * (deliv.sdr_s_to_o ?? 1.0);
-        const ndr = (deliv.ndr_f_to_s ?? 1.0) * (deliv.ndr_s_to_o ?? 1.0);
-
-        const assignedOutlets = p.outlet_ids && p.outlet_ids.length > 0 ? p.outlet_ids : [outlets[0]?.oid || '1'];
-
-        for (const pol of pollutants) {
-          const ratio = pol === 'TSS' ? sdr : ndr;
-          let currentParcelLoad = 0;
-          for (const path of pathways) {
-            currentParcelLoad += parcelPathwayLoads[pIdx][pol][path] || 0;
-          }
-          const routed = currentParcelLoad * ratio;
-          for (const oid of assignedOutlets) {
-            if (outLoads[oid]) {
-              outLoads[oid][pol] += routed;
-            }
-          }
-        }
-      }
-      return outLoads;
+    // PERFORMANCE OPTIMIZATION:
+    // Maintain running totals for current basin remaining loads and routed outlet loads.
+    // Instead of re-summing over all parcels, pathways, and delivery ratios on every trajectory step
+    // (which is O(parcels * pathways * pollutants) per step), we update running totals incrementally (O(1))
+    // when BMP reductions occur.
+    const runningBasinRemaining: Record<Pollutant, number> = {
+      TN: baselineMassTotal.TN,
+      TP: baselineMassTotal.TP,
+      TSS: baselineMassTotal.TSS,
     };
 
-    // Helper to calculate basin remaining load
-    const getBasinRemainingLoads = () => {
-      const rem: Record<Pollutant, number> = { TN: 0, TP: 0, TSS: 0 };
+    const runningOutletLoads: Record<string, Record<Pollutant, number>> = {};
+    for (const out of outlets) {
+      runningOutletLoads[out.oid] = { TN: 0, TP: 0, TSS: 0 };
+    }
+    for (let pIdx = 0; pIdx < parcels.length; pIdx++) {
+      const { sdr, ndr, assignedOutlets } = parcelRouting[pIdx];
       for (const pol of pollutants) {
-        for (let pIdx = 0; pIdx < parcels.length; pIdx++) {
-          for (const path of pathways) {
-            rem[pol] += parcelPathwayLoads[pIdx][pol][path] || 0;
+        const ratio = pol === 'TSS' ? sdr : ndr;
+        let parcelTotal = 0;
+        for (const path of pathways) {
+          parcelTotal += parcelPathwayLoads[pIdx][pol][path] || 0;
+        }
+        const routed = parcelTotal * ratio;
+        for (const oid of assignedOutlets) {
+          if (runningOutletLoads[oid]) {
+            runningOutletLoads[oid][pol] += routed;
           }
         }
       }
-      return rem;
-    };
+    }
 
     // Trajectory tracking
     const trajectory: TrajectoryPoint[] = [];
@@ -241,12 +254,11 @@ export function runSimulation(
     let deterministicBmpCursor = 0;
 
     // Record baseline point
-    const baselineBasin = getBasinRemainingLoads();
     trajectory.push({
       step: 0,
       bmp_count: 0,
       cost_usd: 0,
-      total_load: { ...baselineBasin },
+      total_load: { ...runningBasinRemaining },
       percent_reduction: { TN: 0, TP: 0, TSS: 0 },
       attained: {
         TN: false,
@@ -308,13 +320,8 @@ export function runSimulation(
 
       for (const pol of pollutants) {
         for (const path of pathways) {
-          // Look up matching efficiency row
-          const effRec = efficiencies.find(
-            (e) =>
-              e.cps === selectedCps &&
-              e.pollutant === pol &&
-              e.pathway.toLowerCase() === path.toLowerCase()
-          );
+          // Look up matching efficiency row via O(1) map lookup
+          const effRec = efficiencyMap.get(efficiencyKey(selectedCps, pol, path));
 
           let effVal = 0;
           if (effRec) {
@@ -338,19 +345,23 @@ export function runSimulation(
       // Determine impacted parcels (e.g. wetland impacts upstream parcels too)
       let impactedIndices: number[] = [selectedParcelIdx];
       if (selectedCps === 656) {
-        // Constructed wetland upstream drainage allocation
+        // Constructed wetland upstream drainage allocation via precomputed index map
         const upPids = upstreamMap[String(parcel.pid)] || [];
         for (const upPid of upPids) {
-          const upIdx = parcels.findIndex((p) => String(p.pid) === upPid);
-          if (upIdx >= 0 && !impactedIndices.includes(upIdx)) {
+          const upIdx = parcelIndexByPid.get(upPid);
+          if (upIdx !== undefined && !impactedIndices.includes(upIdx)) {
             impactedIndices.push(upIdx);
           }
         }
       }
 
       for (const targetIdx of impactedIndices) {
+        const { sdr, ndr, assignedOutlets } = parcelRouting[targetIdx];
         for (const pol of pollutants) {
           parcelEverTreated[targetIdx][pol] = true;
+          const ratio = pol === 'TSS' ? sdr : ndr;
+          let targetRemovedForPol = 0;
+
           for (const path of pathways) {
             const currentLoad = parcelPathwayLoads[targetIdx][pol][path] || 0;
             const eff = sampledEfficiencies[pol][path] || 0;
@@ -361,9 +372,22 @@ export function runSimulation(
             // Load cannot become negative, but signed negative efficiency can increase load
             const removed = currentLoad * fraction * eff;
             const newLoad = Math.max(0, currentLoad - removed);
+            const actualDelta = currentLoad - newLoad;
 
-            removedMassKg[pol] += currentLoad - newLoad;
+            removedMassKg[pol] += actualDelta;
+            targetRemovedForPol += actualDelta;
             parcelPathwayLoads[targetIdx][pol][path] = newLoad;
+          }
+
+          // Incrementally update running basin remaining and outlet loads
+          if (targetRemovedForPol !== 0) {
+            runningBasinRemaining[pol] -= targetRemovedForPol;
+            const routedDelta = targetRemovedForPol * ratio;
+            for (const oid of assignedOutlets) {
+              if (runningOutletLoads[oid]) {
+                runningOutletLoads[oid][pol] -= routedDelta;
+              }
+            }
           }
         }
       }
@@ -399,24 +423,22 @@ export function runSimulation(
 
       // Record trajectory at intervals (or every step if count <= 100)
       if (bmpCount <= 100 || bmpCount % Math.ceil(config.bmp_limit_n / 50) === 0 || bmpCount === config.bmp_limit_n) {
-        const curBasin = getBasinRemainingLoads();
-        const curOutlet = getOutletLoads();
         const primaryOutlet = outlets[0]?.oid || '1';
 
         const pt: TrajectoryPoint = {
           step: bmpCount,
           bmp_count: bmpCount,
           cost_usd: cumulativeCostUsd,
-          total_load: { ...curBasin },
+          total_load: { ...runningBasinRemaining },
           percent_reduction: {
-            TN: baselineBasin.TN > 0 ? ((baselineBasin.TN - curBasin.TN) / baselineBasin.TN) * 100 : 0,
-            TP: baselineBasin.TP > 0 ? ((baselineBasin.TP - curBasin.TP) / baselineBasin.TP) * 100 : 0,
-            TSS: baselineBasin.TSS > 0 ? ((baselineBasin.TSS - curBasin.TSS) / baselineBasin.TSS) * 100 : 0,
+            TN: baselineMassTotal.TN > 0 ? ((baselineMassTotal.TN - runningBasinRemaining.TN) / baselineMassTotal.TN) * 100 : 0,
+            TP: baselineMassTotal.TP > 0 ? ((baselineMassTotal.TP - runningBasinRemaining.TP) / baselineMassTotal.TP) * 100 : 0,
+            TSS: baselineMassTotal.TSS > 0 ? ((baselineMassTotal.TSS - runningBasinRemaining.TSS) / baselineMassTotal.TSS) * 100 : 0,
           },
           attained: {
-            TN: outlets[0]?.targets.TN ? (curOutlet[primaryOutlet]?.TN ?? 0) <= outlets[0].targets.TN : false,
-            TP: outlets[0]?.targets.TP ? (curOutlet[primaryOutlet]?.TP ?? 0) <= outlets[0].targets.TP : false,
-            TSS: outlets[0]?.targets.TSS ? (curOutlet[primaryOutlet]?.TSS ?? 0) <= outlets[0].targets.TSS : false,
+            TN: outlets[0]?.targets.TN ? (runningOutletLoads[primaryOutlet]?.TN ?? 0) <= outlets[0].targets.TN : false,
+            TP: outlets[0]?.targets.TP ? (runningOutletLoads[primaryOutlet]?.TP ?? 0) <= outlets[0].targets.TP : false,
+            TSS: outlets[0]?.targets.TSS ? (runningOutletLoads[primaryOutlet]?.TSS ?? 0) <= outlets[0].targets.TSS : false,
           },
         };
         trajectory.push(pt);
@@ -425,9 +447,9 @@ export function runSimulation(
 
     trajectoriesByScenario[sIdx + 1] = trajectory;
 
-    // Calculate Scenario Mass Summaries
-    const finalBasinLoads = getBasinRemainingLoads();
-    const finalOutletLoads = getOutletLoads();
+    // Calculate Scenario Mass Summaries from running loads (exact and O(1))
+    const finalBasinLoads = runningBasinRemaining;
+    const finalOutletLoads = runningOutletLoads;
 
     const treatedBaselineMass: Record<Pollutant, number> = { TN: 0, TP: 0, TSS: 0 };
     const removedMass: Record<Pollutant, number> = { TN: 0, TP: 0, TSS: 0 };
