@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Play, RotateCcw, Sliders, Dices, AlertTriangle, ShieldAlert, DollarSign, CheckCircle2 } from 'lucide-react';
 import { SimulationConfig } from '../types/model';
 
@@ -21,6 +21,8 @@ export const SimulationControls: React.FC<SimulationControlsProps> = ({
   onRun,
   executionTimeMs,
 }) => {
+  const [isRolling, setIsRolling] = useState(false);
+
   const updateField = <K extends keyof SimulationConfig>(key: K, value: SimulationConfig[K]) => {
     onChangeConfig({
       ...config,
@@ -29,8 +31,10 @@ export const SimulationControls: React.FC<SimulationControlsProps> = ({
   };
 
   const handleRandomizeSeed = () => {
+    setIsRolling(true);
     const newSeed = Math.floor(Math.random() * 900000) + 100000;
     updateField('random_seed', newSeed);
+    setTimeout(() => setIsRolling(false), 500);
   };
 
   return (
@@ -83,44 +87,47 @@ export const SimulationControls: React.FC<SimulationControlsProps> = ({
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 sm:gap-4 text-xs">
         {/* Scenarios (N) */}
         <div className="space-y-1">
-          <label className="text-slate-400 font-medium flex items-center justify-between">
+          <label htmlFor="input-n-scenarios" className="text-slate-400 font-medium flex items-center justify-between cursor-pointer">
             <span>Scenarios (N)</span>
           </label>
           <input
+            id="input-n-scenarios"
             type="number"
             min="1"
             max="1000"
             value={config.n_scenarios}
             onChange={(e) => updateField('n_scenarios', Math.max(1, parseInt(e.target.value) || 1))}
             disabled={isRunning}
-            className="w-full bg-slate-800/80 border border-slate-700 rounded-lg px-2.5 py-1.5 text-slate-100 font-mono text-xs focus:ring-1 focus:ring-emerald-500 focus:outline-none"
+            className="w-full bg-slate-800/80 border border-slate-700 rounded-lg px-2.5 py-1.5 text-slate-100 font-mono text-xs focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500 focus:outline-none"
           />
           <span className="text-[10px] text-slate-500 block">Monte Carlo replicates</span>
         </div>
 
         {/* BMP Limit (N) */}
         <div className="space-y-1">
-          <label className="text-slate-400 font-medium flex items-center justify-between">
+          <label htmlFor="input-bmp-limit-n" className="text-slate-400 font-medium flex items-center justify-between cursor-pointer">
             <span>BMP Count Limit</span>
           </label>
           <input
+            id="input-bmp-limit-n"
             type="number"
             min="1"
             max="2000"
             value={config.bmp_limit_n}
             onChange={(e) => updateField('bmp_limit_n', Math.max(1, parseInt(e.target.value) || 1))}
             disabled={isRunning}
-            className="w-full bg-slate-800/80 border border-slate-700 rounded-lg px-2.5 py-1.5 text-slate-100 font-mono text-xs focus:ring-1 focus:ring-emerald-500 focus:outline-none"
+            className="w-full bg-slate-800/80 border border-slate-700 rounded-lg px-2.5 py-1.5 text-slate-100 font-mono text-xs focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500 focus:outline-none"
           />
           <span className="text-[10px] text-slate-500 block">Max practices per scenario</span>
         </div>
 
         {/* Budget Limit (USD) */}
         <div className="space-y-1">
-          <label className="text-slate-400 font-medium flex items-center justify-between">
+          <label htmlFor="input-bmp-limit-usd" className="text-slate-400 font-medium flex items-center justify-between cursor-pointer">
             <span>Budget Limit ($)</span>
           </label>
           <input
+            id="input-bmp-limit-usd"
             type="number"
             min="0"
             step="10000"
@@ -133,17 +140,18 @@ export const SimulationControls: React.FC<SimulationControlsProps> = ({
               )
             }
             disabled={isRunning}
-            className="w-full bg-slate-800/80 border border-slate-700 rounded-lg px-2.5 py-1.5 text-slate-100 font-mono text-xs focus:ring-1 focus:ring-emerald-500 focus:outline-none"
+            className="w-full bg-slate-800/80 border border-slate-700 rounded-lg px-2.5 py-1.5 text-slate-100 font-mono text-xs focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500 focus:outline-none"
           />
           <span className="text-[10px] text-slate-500 block">Optional stopping rule</span>
         </div>
 
         {/* Failure Rate */}
         <div className="space-y-1">
-          <label className="text-slate-400 font-medium flex items-center justify-between">
+          <label htmlFor="input-bmp-fail-rate" className="text-slate-400 font-medium flex items-center justify-between cursor-pointer">
             <span>Failure Prob (P)</span>
           </label>
           <input
+            id="input-bmp-fail-rate"
             type="number"
             min="0"
             max="1"
@@ -153,17 +161,18 @@ export const SimulationControls: React.FC<SimulationControlsProps> = ({
               updateField('bmp_fail_rate', Math.max(0, Math.min(1, parseFloat(e.target.value) || 0)))
             }
             disabled={isRunning}
-            className="w-full bg-slate-800/80 border border-slate-700 rounded-lg px-2.5 py-1.5 text-slate-100 font-mono text-xs focus:ring-1 focus:ring-emerald-500 focus:outline-none"
+            className="w-full bg-slate-800/80 border border-slate-700 rounded-lg px-2.5 py-1.5 text-slate-100 font-mono text-xs focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500 focus:outline-none"
           />
           <span className="text-[10px] text-slate-500 block">Probability BMP fails</span>
         </div>
 
         {/* Failure Reduction */}
         <div className="space-y-1">
-          <label className="text-slate-400 font-medium flex items-center justify-between">
+          <label htmlFor="input-bmp-fail-reduction" className="text-slate-400 font-medium flex items-center justify-between cursor-pointer">
             <span>Fail Reduction</span>
           </label>
           <input
+            id="input-bmp-fail-reduction"
             type="number"
             min="0"
             max="1"
@@ -173,30 +182,33 @@ export const SimulationControls: React.FC<SimulationControlsProps> = ({
               updateField('bmp_fail_reduction', Math.max(0, Math.min(1, parseFloat(e.target.value) || 0)))
             }
             disabled={isRunning}
-            className="w-full bg-slate-800/80 border border-slate-700 rounded-lg px-2.5 py-1.5 text-slate-100 font-mono text-xs focus:ring-1 focus:ring-emerald-500 focus:outline-none"
+            className="w-full bg-slate-800/80 border border-slate-700 rounded-lg px-2.5 py-1.5 text-slate-100 font-mono text-xs focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500 focus:outline-none"
           />
           <span className="text-[10px] text-slate-500 block">Eff. loss on failure</span>
         </div>
 
         {/* Random Seed */}
         <div className="space-y-1">
-          <label className="text-slate-400 font-medium flex items-center justify-between">
+          <label htmlFor="input-random-seed" className="text-slate-400 font-medium flex items-center justify-between cursor-pointer">
             <span>Random Seed</span>
             <button
+              type="button"
               onClick={handleRandomizeSeed}
               disabled={isRunning}
               title="Generate new random seed"
-              className="text-slate-400 hover:text-emerald-400 transition"
+              aria-label="Generate new random seed"
+              className="text-slate-400 hover:text-emerald-400 transition cursor-pointer p-0.5 rounded focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-emerald-400"
             >
-              <Dices className="w-3.5 h-3.5" />
+              <Dices className={`w-3.5 h-3.5 transition-transform duration-500 ${isRolling ? 'rotate-180 text-emerald-400 scale-110' : ''}`} />
             </button>
           </label>
           <input
+            id="input-random-seed"
             type="number"
             value={config.random_seed}
             onChange={(e) => updateField('random_seed', parseInt(e.target.value) || 42)}
             disabled={isRunning}
-            className="w-full bg-slate-800/80 border border-slate-700 rounded-lg px-2.5 py-1.5 text-slate-100 font-mono text-xs focus:ring-1 focus:ring-emerald-500 focus:outline-none"
+            className="w-full bg-slate-800/80 border border-slate-700 rounded-lg px-2.5 py-1.5 text-slate-100 font-mono text-xs focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500 focus:outline-none"
           />
           <span className="text-[10px] text-slate-500 block">Reproducible sequence</span>
         </div>
