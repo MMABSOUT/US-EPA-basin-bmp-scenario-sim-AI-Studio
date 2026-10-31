@@ -167,3 +167,6 @@ cython_debug/
 __pycache__/
 src/__pycache__
 /examples/east_fork/outputs
+
+node_modules/
+dist/
